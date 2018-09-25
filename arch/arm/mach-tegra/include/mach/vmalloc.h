@@ -1,4 +1,3 @@
-
 /*
  * arch/arm/mach-tegra/include/mach/vmalloc.h
  *

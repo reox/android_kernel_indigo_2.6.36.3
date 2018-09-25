@@ -22,6 +22,8 @@
 #include <linux/clk.h>
 #include <linux/io.h>
 #include <linux/gpio.h>
+#include <linux/delay.h>
+#include <linux/bitops.h>
 #include <linux/mmc/card.h>
 
 #include <mach/sdhci.h>
@@ -35,44 +37,32 @@
 struct tegra_sdhci_host {
 	struct sdhci_host *sdhci;
 	struct clk *clk;
-	struct tegra_sdhci_platform_data *plat;
 	int clk_enabled;
+	bool card_always_on;
+	u32 sdhci_ints;
+	int wp_gpio;
+	int card_present;
+	int cd_gpio;
+	int cd_gpio_polarity;
 };
 
 static irqreturn_t carddetect_irq(int irq, void *data)
 {
 	struct sdhci_host *sdhost = (struct sdhci_host *)data;
+	struct tegra_sdhci_host *host = sdhci_priv(sdhost);
 
-	sdhci_card_detect_callback(sdhost);
+	host->card_present =
+		(gpio_get_value(host->cd_gpio) == host->cd_gpio_polarity);
+	tasklet_schedule(&sdhost->card_tasklet);
 	return IRQ_HANDLED;
 };
 
-static void sdhci_status_notify_cb(int card_present, void *dev_id)
+static void tegra_sdhci_status_notify_cb(int card_present, void *dev_id)
 {
-	struct sdhci_host *host = (struct sdhci_host *)dev_id;
-	struct tegra_sdhci_host *tegra_host = sdhci_priv(host);
-	unsigned int status, oldstat;
-
-	pr_debug("%s: card_present %d\n", mmc_hostname(host->mmc),
-		card_present);
-
-        if (!tegra_host->plat->mmc_data.status) {
-		mmc_detect_change(host->mmc, 0);
-		return;
-	}
-
-	status = tegra_host->plat->mmc_data.status(mmc_dev(host->mmc));
-
-	oldstat = host->card_present;
-	host->card_present = status;
-	if (status ^ oldstat) {
-		pr_debug("%s: Slot status change detected (%d -> %d)\n",
-			mmc_hostname(host->mmc), oldstat, status);
-		if (status && !tegra_host->plat->mmc_data.built_in)
-			mmc_detect_change(host->mmc, (5 * HZ) / 2);
-		else
-			mmc_detect_change(host->mmc, 0);
-	}
+	struct sdhci_host *sdhci = (struct sdhci_host *)dev_id;
+	pr_debug("%s: card_present %d\n",
+		mmc_hostname(sdhci->mmc), card_present);
+	sdhci_card_detect_callback(sdhci);
 }
 
 static int tegra_sdhci_enable_dma(struct sdhci_host *host)
@@ -102,9 +92,27 @@ static void tegra_sdhci_set_clock(struct sdhci_host *sdhci, unsigned int clock)
 	tegra_sdhci_enable_clock(host, clock);
 }
 
+static int tegra_sdhci_card_detect(struct sdhci_host *sdhost)
+{
+	struct tegra_sdhci_host *host = sdhci_priv(sdhost);
+
+	return host->card_present;
+}
+
+static int tegra_sdhci_get_ro(struct sdhci_host *sdhci)
+{
+	struct tegra_sdhci_host *host;
+	host = sdhci_priv(sdhci);
+	if (gpio_is_valid(host->wp_gpio))
+		return gpio_get_value(host->wp_gpio);
+	return 0;
+}
+
 static struct sdhci_ops tegra_sdhci_ops = {
 	.enable_dma = tegra_sdhci_enable_dma,
 	.set_clock = tegra_sdhci_set_clock,
+	.get_ro = tegra_sdhci_get_ro,
+	.card_detect = tegra_sdhci_card_detect,
 };
 
 static int __devinit tegra_sdhci_probe(struct platform_device *pdev)
@@ -141,16 +149,10 @@ static int __devinit tegra_sdhci_probe(struct platform_device *pdev)
 
 	host = sdhci_priv(sdhci);
 	host->sdhci = sdhci;
-	host->plat = plat;
-
-#ifdef CONFIG_MMC_EMBEDDED_SDIO
-	if (plat->mmc_data.embedded_sdio)
-		mmc_set_embedded_sdio_data(sdhci->mmc,
-				&plat->mmc_data.embedded_sdio->cis,
-				&plat->mmc_data.embedded_sdio->cccr,
-				plat->mmc_data.embedded_sdio->funcs,
-				plat->mmc_data.embedded_sdio->num_funcs);
-#endif
+	host->card_always_on = (plat->power_gpio == -1) ? 1 : 0;
+	host->wp_gpio = plat->wp_gpio;
+	host->cd_gpio = plat->cd_gpio;
+	host->cd_gpio_polarity = plat->cd_gpio_polarity;
 
 	host->clk = clk_get(&pdev->dev, plat->clk_id);
 	if (IS_ERR(host->clk)) {
@@ -174,20 +176,25 @@ static int __devinit tegra_sdhci_probe(struct platform_device *pdev)
 			SDHCI_QUIRK_BROKEN_WRITE_PROTECT |
 			SDHCI_QUIRK_BROKEN_CTRL_HISPD |
 			SDHCI_QUIRK_NO_HISPD_BIT |
-			SDHCI_QUIRK_8_BIT_DATA |
 			SDHCI_QUIRK_NO_VERSION_REG |
 			SDHCI_QUIRK_BROKEN_ADMA_ZEROLEN_DESC |
-			SDHCI_QUIRK_NO_SDIO_IRQ;
+			SDHCI_QUIRK_RUNTIME_DISABLE |
+			SDHCI_QUIRK_BROKEN_CARD_DETECTION;
+
+	if (plat->bus_width == 8)
+		sdhci->quirks |= SDHCI_QUIRK_8_BIT_DATA;
 
 	if (plat->force_hs != 0)
 		sdhci->quirks |= SDHCI_QUIRK_FORCE_HIGH_SPEED_MODE;
-
-	if (plat->rt_disable != 0)
-		sdhci->quirks |= SDHCI_QUIRK_RUNTIME_DISABLE;
-
-	sdhci->mmc->pm_caps = MMC_PM_KEEP_POWER | MMC_PM_IGNORE_PM_NOTIFY;
-	if (plat->mmc_data.built_in)
-		sdhci->mmc->pm_flags = MMC_PM_KEEP_POWER | MMC_PM_IGNORE_PM_NOTIFY;
+#ifdef CONFIG_MMC_EMBEDDED_SDIO
+	mmc_set_embedded_sdio_data(sdhci->mmc,
+			&plat->cis,
+			&plat->cccr,
+			plat->funcs,
+			plat->num_funcs);
+#endif
+	if (host->card_always_on)
+		sdhci->mmc->pm_flags |= MMC_PM_IGNORE_PM_NOTIFY;
 
 	rc = sdhci_add_host(sdhci);
 	if (rc)
@@ -202,13 +209,14 @@ static int __devinit tegra_sdhci_probe(struct platform_device *pdev)
 
 		if (rc)
 			goto err_remove_host;
-	} else if (plat->mmc_data.register_status_notify) {
-		plat->mmc_data.register_status_notify(sdhci_status_notify_cb, sdhci);
+		host->card_present =
+			(gpio_get_value(plat->cd_gpio) == host->cd_gpio_polarity);
+	} else if (plat->register_status_notify) {
+		plat->register_status_notify(
+			tegra_sdhci_status_notify_cb, sdhci);
 	}
-
-	if (plat->mmc_data.status) {
-		sdhci->card_present = host->plat->mmc_data.status(mmc_dev(sdhci->mmc));
-	}
+       if (plat->cd_gpio == -1)
+		host->card_present = true;
 
 	if (plat->board_probe)
 		plat->board_probe(pdev->id, sdhci->mmc);
@@ -248,15 +256,95 @@ static int tegra_sdhci_remove(struct platform_device *pdev)
 	return 0;
 }
 
+
+#define is_card_sdio(_card) \
+((_card) && ((_card)->type == MMC_TYPE_SDIO))
+
 #ifdef CONFIG_PM
+
+
+static void tegra_sdhci_restore_interrupts(struct sdhci_host *sdhost)
+{
+	u32 ierr;
+	u32 clear = SDHCI_INT_ALL_MASK;
+	struct tegra_sdhci_host *host = sdhci_priv(sdhost);
+
+	/* enable required interrupts */
+	ierr = sdhci_readl(sdhost, SDHCI_INT_ENABLE);
+	ierr &= ~clear;
+	ierr |= host->sdhci_ints;
+	sdhci_writel(sdhost, ierr, SDHCI_INT_ENABLE);
+	sdhci_writel(sdhost, ierr, SDHCI_SIGNAL_ENABLE);
+
+	if ((host->sdhci_ints & SDHCI_INT_CARD_INT) &&
+		(sdhost->quirks & SDHCI_QUIRK_ENABLE_INTERRUPT_AT_BLOCK_GAP)) {
+		u8 gap_ctrl = sdhci_readb(sdhost, SDHCI_BLOCK_GAP_CONTROL);
+		gap_ctrl |= 0x8;
+		sdhci_writeb(sdhost, gap_ctrl, SDHCI_BLOCK_GAP_CONTROL);
+	}
+}
+
+static int tegra_sdhci_restore(struct sdhci_host *sdhost)
+{
+	unsigned long timeout;
+	u8 mask = SDHCI_RESET_ALL;
+
+	sdhci_writeb(sdhost, mask, SDHCI_SOFTWARE_RESET);
+
+	sdhost->clock = 0;
+
+	/* Wait max 100 ms */
+	timeout = 100;
+
+	/* hw clears the bit when it's done */
+	while (sdhci_readb(sdhost, SDHCI_SOFTWARE_RESET) & mask) {
+		if (timeout == 0) {
+			printk(KERN_ERR "%s: Reset 0x%x never completed.\n",
+				mmc_hostname(sdhost->mmc), (int)mask);
+			return -EIO;
+		}
+		timeout--;
+		mdelay(1);
+	}
+
+	tegra_sdhci_restore_interrupts(sdhost);
+	return 0;
+}
+
 static int tegra_sdhci_suspend(struct platform_device *pdev, pm_message_t state)
 {
 	struct tegra_sdhci_host *host = platform_get_drvdata(pdev);
-	struct mmc_host *mmc = host->sdhci->mmc;
-	int ret;
+	int ret = 0;
 
-	if (host->plat->mmc_data.built_in)
-	        mmc->pm_flags |= MMC_PM_KEEP_POWER;
+	if (host->card_always_on && is_card_sdio(host->sdhci->mmc->card)) {
+		int div = 0;
+		u16 clk;
+		unsigned int clock = 100000;
+
+		if (device_may_wakeup(&pdev->dev)) {
+		        enable_irq_wake(host->sdhci->irq);
+		}
+
+		/* save interrupt status before suspending */
+		host->sdhci_ints = sdhci_readl(host->sdhci, SDHCI_INT_ENABLE);
+
+		/* reduce host controller clk and card clk to 100 KHz */
+		tegra_sdhci_set_clock(host->sdhci, clock);
+		sdhci_writew(host->sdhci, 0, SDHCI_CLOCK_CONTROL);
+
+		if (host->sdhci->max_clk > clock) {
+			div =  1 << (fls(host->sdhci->max_clk / clock) - 2);
+			if (div > 128)
+				div = 128;
+		}
+
+		clk = div << SDHCI_DIVIDER_SHIFT;
+		clk |= SDHCI_CLOCK_INT_EN | SDHCI_CLOCK_CARD_EN;
+		sdhci_writew(host->sdhci, clk, SDHCI_CLOCK_CONTROL);
+
+		return ret;
+	}
+
 
 	ret = sdhci_suspend_host(host->sdhci, state);
 	if (ret)
@@ -270,8 +358,34 @@ static int tegra_sdhci_resume(struct platform_device *pdev)
 {
 	struct tegra_sdhci_host *host = platform_get_drvdata(pdev);
 	int ret;
+	u8 pwr;
+
+	if (host->card_always_on && is_card_sdio(host->sdhci->mmc->card)) {
+		int ret = 0;
+
+		if (device_may_wakeup(&pdev->dev)) {
+		        disable_irq_wake(host->sdhci->irq);
+		}
+
+		/* soft reset SD host controller and enable interrupts */
+		ret = tegra_sdhci_restore(host->sdhci);
+		if (ret) {
+			pr_err("%s: failed, error = %d\n", __func__, ret);
+			return ret;
+		}
+
+		mmiowb();
+		host->sdhci->mmc->ops->set_ios(host->sdhci->mmc,
+			&host->sdhci->mmc->ios);
+		return 0;
+	}
 
 	tegra_sdhci_enable_clock(host, 1);
+
+	pwr = SDHCI_POWER_ON;
+	sdhci_writeb(host->sdhci, pwr, SDHCI_POWER_CONTROL);
+	host->sdhci->pwr = 0;
+
 	ret = sdhci_resume_host(host->sdhci);
 	if (ret)
 		pr_err("%s: failed, error = %d\n", __func__, ret);

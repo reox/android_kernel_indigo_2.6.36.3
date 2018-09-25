@@ -22,6 +22,7 @@
 #include <linux/list.h>
 #include <linux/mutex.h>
 #include <linux/wait.h>
+#include <linux/switch.h>
 #include "../host/dev.h"
 
 struct tegra_dc;
@@ -82,12 +83,17 @@ struct tegra_dc {
 	struct resource			*fb_mem;
 	struct tegra_fb_info		*fb;
 
+	struct tegra_overlay_info	*overlay;
+
 	u32				syncpt_id;
 	u32				syncpt_min;
 	u32				syncpt_max;
 
 	unsigned long			underflow_mask;
 	struct work_struct		reset_work;
+
+	struct switch_dev		modeset_switch;
+	bool disableHDMI;
 };
 
 static inline void tegra_dc_io_start(struct tegra_dc *dc)
@@ -140,5 +146,6 @@ void tegra_dc_setup_clk(struct tegra_dc *dc, struct clk *clk);
 
 extern struct tegra_dc_out_ops tegra_dc_rgb_ops;
 extern struct tegra_dc_out_ops tegra_dc_hdmi_ops;
+extern struct tegra_dc_out_ops tegra_dc_dsi_ops;
 
 #endif

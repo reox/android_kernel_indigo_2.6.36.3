@@ -37,6 +37,7 @@
 
 #include "nvmap.h"
 #include "nvmap_mru.h"
+#include "nvmap_common.h"
 
 #define NVMAP_SECURE_HEAPS	(NVMAP_HEAP_CARVEOUT_IRAM | NVMAP_HEAP_IOVMM)
 #ifdef CONFIG_NVMAP_HIGHMEM_ONLY
@@ -81,6 +82,7 @@ void _nvmap_handle_free(struct nvmap_handle *h)
 		goto out;
 
 	if (!h->heap_pgalloc) {
+		nvmap_usecount_inc(h);
 		nvmap_heap_free(h->carveout);
 		goto out;
 	}
@@ -106,7 +108,8 @@ out:
 
 extern void __flush_dcache_page(struct address_space *, struct page *);
 
-static struct page *nvmap_alloc_pages_exact(gfp_t gfp, size_t size)
+static struct page *nvmap_alloc_pages_exact(gfp_t gfp,
+	size_t size, bool flush_inner)
 {
 	struct page *page, *p, *e;
 	unsigned int order;
@@ -126,8 +129,10 @@ static struct page *nvmap_alloc_pages_exact(gfp_t gfp, size_t size)
 		__free_page(p);
 
 	e = page + (size >> PAGE_SHIFT);
-	for (p = page; p < e; p++)
-		__flush_dcache_page(page_mapping(p), p);
+	if (flush_inner) {
+		for (p = page; p < e; p++)
+			__flush_dcache_page(page_mapping(p), p);
+	}
 
 	base = page_to_phys(page);
 	outer_flush_range(base, base + size);
@@ -142,6 +147,7 @@ static int handle_page_alloc(struct nvmap_client *client,
 	pgprot_t prot;
 	unsigned int i = 0;
 	struct page **pages;
+	bool flush_inner = true;
 
 	pages = altalloc(nr_page * sizeof(*pages));
 	if (!pages)
@@ -154,10 +160,14 @@ static int handle_page_alloc(struct nvmap_client *client,
 		contiguous = true;
 #endif
 
+	if (size >= FLUSH_CLEAN_BY_SET_WAY_THRESHOLD) {
+		inner_flush_cache_all();
+		flush_inner = false;
+	}
 	h->pgalloc.area = NULL;
 	if (contiguous) {
 		struct page *page;
-		page = nvmap_alloc_pages_exact(GFP_NVMAP, size);
+		page = nvmap_alloc_pages_exact(GFP_NVMAP, size, flush_inner);
 		if (!page)
 			goto fail;
 
@@ -166,7 +176,8 @@ static int handle_page_alloc(struct nvmap_client *client,
 
 	} else {
 		for (i = 0; i < nr_page; i++) {
-			pages[i] = nvmap_alloc_pages_exact(GFP_NVMAP, PAGE_SIZE);
+			pages[i] = nvmap_alloc_pages_exact(GFP_NVMAP, PAGE_SIZE,
+				flush_inner);
 			if (!pages[i])
 				goto fail;
 		}
@@ -192,6 +203,7 @@ fail:
 	while (i--)
 		__free_page(pages[i]);
 	altfree(pages, nr_page * sizeof(*pages));
+	wmb();
 	return -ENOMEM;
 }
 
@@ -199,19 +211,23 @@ static void alloc_handle(struct nvmap_client *client, size_t align,
 			 struct nvmap_handle *h, unsigned int type)
 {
 	BUG_ON(type & (type - 1));
-
 	if (type & NVMAP_HEAP_CARVEOUT_MASK) {
 		struct nvmap_heap_block *b;
+
+		/* Protect handle from relocation */
+		nvmap_usecount_inc(h);
+
 		b = nvmap_carveout_alloc(client, h->size, align,
-					 type, h->flags);
+					 type, h->flags, h);
 		if (b) {
-			h->carveout = b;
 			h->heap_pgalloc = false;
 			h->alloc = true;
 			nvmap_carveout_commit_add(client,
 				nvmap_heap_to_arg(nvmap_block_to_heap(b)),
 				h->size);
 		}
+		nvmap_usecount_dec(h);
+
 	} else if (type & NVMAP_HEAP_IOVMM) {
 		size_t reserved = PAGE_ALIGN(h->size);
 		int commit;
@@ -365,10 +381,13 @@ void nvmap_free_handle_id(struct nvmap_client *client, unsigned long id)
 	if (h->alloc && h->heap_pgalloc && !h->pgalloc.contig)
 		atomic_sub(h->size, &client->iovm_commit);
 
-	if (h->alloc && !h->heap_pgalloc)
+	if (h->alloc && !h->heap_pgalloc) {
+		mutex_lock(&h->lock);
 		nvmap_carveout_commit_subtract(client,
-		nvmap_heap_to_arg(nvmap_block_to_heap(h->carveout)),
-		h->size);
+			nvmap_heap_to_arg(nvmap_block_to_heap(h->carveout)),
+			h->size);
+		mutex_unlock(&h->lock);
+	}
 
 	nvmap_ref_unlock(client);
 
@@ -505,10 +524,13 @@ struct nvmap_handle_ref *nvmap_duplicate_handle_id(struct nvmap_client *client,
 		return ERR_PTR(-ENOMEM);
 	}
 
-	if (!h->heap_pgalloc)
+	if (!h->heap_pgalloc) {
+		mutex_lock(&h->lock);
 		nvmap_carveout_commit_add(client,
 			nvmap_heap_to_arg(nvmap_block_to_heap(h->carveout)),
 			h->size);
+		mutex_unlock(&h->lock);
+	}
 
 	atomic_set(&ref->dupes, 1);
 	ref->handle = h;

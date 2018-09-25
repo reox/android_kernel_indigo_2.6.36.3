@@ -36,6 +36,13 @@ config MAX8925_POWER
 	  Say Y here to enable support for the battery charger in the Maxim
 	  MAX8925 PMIC.
 
+config MAX8907C_CHARGER
+	tristate "MAX8907c charger support"
+	depends on MFD_MAX8907C
+	help
+	  Say Y here to enable support for the charger in the Maxim
+	  MAX8907c PMIC.
+
 config WM831X_BACKUP
 	tristate "WM831X backup battery charger support"
 	depends on MFD_WM831X
@@ -68,13 +75,6 @@ config BATTERY_DS2760
 	select W1_SLAVE_DS2760
 	help
 	  Say Y here to enable support for batteries with ds2760 chip.
-
-config BATTERY_DS2781
-	tristate "DS2781 battery driver"
-	select W1
-	select W1_SLAVE_DS2781
-	help
-	  Say Y here to enable support for batteries with ds2781 chip.
 
 config BATTERY_DS2782
 	tristate "DS2782/DS2786 standalone gas-gauge"
@@ -116,10 +116,17 @@ config BATTERY_WM97XX
 	help
 	  Say Y to enable support for battery measured by WM97xx aux port.
 
-config CHARGER_BQ24617
-	tristate "BQ24617 Charger Driver"
+config BATTERY_BQ20Z75
+	tristate "TI BQ20Z75 Fuel gauge"
+	depends on I2C
 	help
-	  Say Y to include support for BQ24617 Main Battery Charger.
+	 Say Y to include support for TI BQ20Z75 (I2C) fuel gauge chips.
+
+config BATTERY_ECBAT
+	tristate "EC control and battery gauge"
+	depends on I2C
+	help
+	 Say Y to include support for EC control and battery behind EC.
 
 config BATTERY_BQ27x00
 	tristate "BQ27x00 battery driver"

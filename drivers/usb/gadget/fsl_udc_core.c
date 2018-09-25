@@ -367,6 +367,10 @@ static void dr_controller_stop(struct fsl_udc *udc)
 {
 	unsigned int tmp;
 
+	/* Clear pending interrupt status bits */
+	tmp = fsl_readl(&dr_regs->usbsts);
+	fsl_writel(tmp, &dr_regs->usbsts);
+
 	/* disable all INTR */
 	fsl_writel(0, &dr_regs->usbintr);
 
@@ -498,9 +502,9 @@ static void ep0_setup(struct fsl_udc *udc)
 	/* the intialization of an ep includes: fields in QH, Regs,
 	 * fsl_ep struct */
 	struct_ep_qh_setup(udc, 0, USB_RECV, USB_ENDPOINT_XFER_CONTROL,
-			USB_MAX_CTRL_PAYLOAD, 0, 0);
+			USB_MAX_CTRL_PAYLOAD, 1, 0);
 	struct_ep_qh_setup(udc, 0, USB_SEND, USB_ENDPOINT_XFER_CONTROL,
-			USB_MAX_CTRL_PAYLOAD, 0, 0);
+			USB_MAX_CTRL_PAYLOAD, 1, 0);
 	dr_ep_setup(0, USB_RECV, USB_ENDPOINT_XFER_CONTROL);
 	dr_ep_setup(0, USB_SEND, USB_ENDPOINT_XFER_CONTROL);
 
@@ -623,12 +627,18 @@ static int fsl_ep_disable(struct usb_ep *_ep)
 
 	/* disable ep on controller */
 	ep_num = ep_index(ep);
-	epctrl = fsl_readl(&dr_regs->endptctrl[ep_num]);
-	if (ep_is_in(ep))
-		epctrl &= ~EPCTRL_TX_ENABLE;
-	else
-		epctrl &= ~EPCTRL_RX_ENABLE;
-	fsl_writel(epctrl, &dr_regs->endptctrl[ep_num]);
+#if defined(CONFIG_ARCH_TEGRA)
+	/* Touch the registers if cable is connected and phy is on */
+	if (udc_controller->vbus_active)
+#endif
+	{
+		epctrl = fsl_readl(&dr_regs->endptctrl[ep_num]);
+		if (ep_is_in(ep))
+			epctrl &= ~EPCTRL_TX_ENABLE;
+		else
+			epctrl &= ~EPCTRL_RX_ENABLE;
+		fsl_writel(epctrl, &dr_regs->endptctrl[ep_num]);
+	}
 
 	udc = (struct fsl_udc *)ep->udc;
 	spin_lock_irqsave(&udc->lock, flags);
@@ -955,12 +965,19 @@ static int fsl_ep_dequeue(struct usb_ep *_ep, struct usb_request *_req)
 	/* Stop the ep before we deal with the queue */
 	ep->stopped = 1;
 	ep_num = ep_index(ep);
-	epctrl = fsl_readl(&dr_regs->endptctrl[ep_num]);
-	if (ep_is_in(ep))
-		epctrl &= ~EPCTRL_TX_ENABLE;
-	else
-		epctrl &= ~EPCTRL_RX_ENABLE;
-	fsl_writel(epctrl, &dr_regs->endptctrl[ep_num]);
+
+#if defined(CONFIG_ARCH_TEGRA)
+	/* Touch the registers if cable is connected and phy is on */
+	if (udc_controller->vbus_active)
+#endif
+	{
+		epctrl = fsl_readl(&dr_regs->endptctrl[ep_num]);
+		if (ep_is_in(ep))
+			epctrl &= ~EPCTRL_TX_ENABLE;
+		else
+			epctrl &= ~EPCTRL_RX_ENABLE;
+		fsl_writel(epctrl, &dr_regs->endptctrl[ep_num]);
+	}
 
 	/* make sure it's actually queued on this endpoint */
 	list_for_each_entry(req, &ep->queue, queue) {
@@ -1003,12 +1020,19 @@ static int fsl_ep_dequeue(struct usb_ep *_ep, struct usb_request *_req)
 	done(ep, req, -ECONNRESET);
 
 	/* Enable EP */
-out:	epctrl = fsl_readl(&dr_regs->endptctrl[ep_num]);
-	if (ep_is_in(ep))
-		epctrl |= EPCTRL_TX_ENABLE;
-	else
-		epctrl |= EPCTRL_RX_ENABLE;
-	fsl_writel(epctrl, &dr_regs->endptctrl[ep_num]);
+out:
+#if defined(CONFIG_ARCH_TEGRA)
+	/* Touch the registers if cable is connected and phy is on */
+	if (udc_controller->vbus_active)
+#endif
+	{
+		epctrl = fsl_readl(&dr_regs->endptctrl[ep_num]);
+		if (ep_is_in(ep))
+			epctrl |= EPCTRL_TX_ENABLE;
+		else
+			epctrl |= EPCTRL_RX_ENABLE;
+		fsl_writel(epctrl, &dr_regs->endptctrl[ep_num]);
+	}
 	ep->stopped = stopped;
 
 	spin_unlock_irqrestore(&ep->udc->lock, flags);
@@ -1076,6 +1100,12 @@ static void fsl_ep_fifo_flush(struct usb_ep *_ep)
 	unsigned long timeout;
 #define FSL_UDC_FLUSH_TIMEOUT 1000
 
+#if defined(CONFIG_ARCH_TEGRA)
+	/* Touch the registers if cable is connected and phy is on */
+	if (!udc_controller->vbus_active)
+		return;
+#endif
+
 	if (!_ep) {
 		return;
 	} else {
@@ -1138,6 +1168,7 @@ static int fsl_get_frame(struct usb_gadget *gadget)
 /*-----------------------------------------------------------------------
  * Tries to wake up the host connected to this gadget
  -----------------------------------------------------------------------*/
+#ifndef CONFIG_USB_ANDROID
 static int fsl_wakeup(struct usb_gadget *gadget)
 {
 	struct fsl_udc *udc = container_of(gadget, struct fsl_udc, gadget);
@@ -1156,6 +1187,7 @@ static int fsl_wakeup(struct usb_gadget *gadget)
 	fsl_writel(portsc, &dr_regs->portsc1);
 	return 0;
 }
+#endif
 
 static int can_pullup(struct fsl_udc *udc)
 {
@@ -1170,24 +1202,23 @@ static int fsl_vbus_session(struct usb_gadget *gadget, int is_active)
 	unsigned long	flags;
 
 	udc = container_of(gadget, struct fsl_udc, gadget);
-	spin_lock_irqsave(&udc->lock, flags);
 
 	VDBG("VBUS %s", is_active ? "on" : "off");
 
 	if (udc->transceiver) {
 		if (udc->vbus_active && !is_active) {
+			spin_lock_irqsave(&udc->lock, flags);
 			/* reset all internal Queues and inform client driver */
 			reset_queues(udc);
 			/* stop the controller and turn off the clocks */
 			dr_controller_stop(udc);
 			dr_controller_reset(udc);
-			spin_unlock_irqrestore(&udc->lock, flags);
-			fsl_udc_clk_suspend();
 			udc->vbus_active = 0;
 			udc->usb_state = USB_STATE_DEFAULT;
-		} else if (!udc->vbus_active && is_active) {
 			spin_unlock_irqrestore(&udc->lock, flags);
-			fsl_udc_clk_resume();
+			fsl_udc_clk_suspend(false);
+		} else if (!udc->vbus_active && is_active) {
+			fsl_udc_clk_resume(false);
 			/* setup the controller in the device mode */
 			dr_controller_setup(udc);
 			/* setup EP0 for setup packet */
@@ -1203,6 +1234,7 @@ static int fsl_vbus_session(struct usb_gadget *gadget, int is_active)
 		return 0;
 	}
 
+	spin_lock_irqsave(&udc->lock, flags);
 	udc->vbus_active = (is_active != 0);
 	if (can_pullup(udc))
 		fsl_writel((fsl_readl(&dr_regs->usbcmd) | USB_CMD_RUN_STOP),
@@ -1253,7 +1285,9 @@ static int fsl_pullup(struct usb_gadget *gadget, int is_on)
 /* defined in gadget.h */
 static struct usb_gadget_ops fsl_gadget_ops = {
 	.get_frame = fsl_get_frame,
+#ifndef CONFIG_USB_ANDROID
 	.wakeup = fsl_wakeup,
+#endif
 /*	.set_selfpowered = fsl_set_selfpowered,	*/ /* Always selfpowered */
 	.vbus_session = fsl_vbus_session,
 	.vbus_draw = fsl_vbus_draw,
@@ -1371,6 +1405,23 @@ static void ch9getstatus(struct fsl_udc *udc, u8 request_type, u16 value,
 	req->req.actual = 0;
 	req->req.complete = NULL;
 	req->dtd_count = 0;
+
+	/* map virtual address to hardware */
+	if (req->req.dma == DMA_ADDR_INVALID) {
+		req->req.dma = dma_map_single(ep->udc->gadget.dev.parent,
+					req->req.buf,
+					req->req.length, ep_is_in(ep)
+						? DMA_TO_DEVICE
+						: DMA_FROM_DEVICE);
+		req->mapped = 1;
+	} else {
+		dma_sync_single_for_device(ep->udc->gadget.dev.parent,
+					req->req.dma, req->req.length,
+					ep_is_in(ep)
+						? DMA_TO_DEVICE
+						: DMA_FROM_DEVICE);
+		req->mapped = 0;
+	}
 
 	/* prime the data phase */
 	if ((fsl_req_to_dtd(req, GFP_ATOMIC) == 0))
@@ -1581,7 +1632,7 @@ static void setup_received_irq(struct fsl_udc *udc,
 		udc->ep0_dir = (setup->bRequestType & USB_DIR_IN)
 				?  USB_DIR_IN : USB_DIR_OUT;
 		spin_unlock(&udc->lock);
-		if (udc->driver->setup(&udc->gadget,
+		if (udc->driver && udc->driver->setup(&udc->gadget,
 				&udc->local_setup_buff) < 0)
 			ep0stall(udc);
 		spin_lock(&udc->lock);
@@ -1591,7 +1642,7 @@ static void setup_received_irq(struct fsl_udc *udc,
 		/* No data phase, IN status from gadget */
 		udc->ep0_dir = USB_DIR_IN;
 		spin_unlock(&udc->lock);
-		if (udc->driver->setup(&udc->gadget,
+		if (udc->driver && udc->driver->setup(&udc->gadget,
 				&udc->local_setup_buff) < 0)
 			ep0stall(udc);
 		spin_lock(&udc->lock);
@@ -1837,7 +1888,7 @@ static void suspend_irq(struct fsl_udc *udc)
 	udc->usb_state = USB_STATE_SUSPENDED;
 
 	/* report suspend to the driver, serial.c does not support this */
-	if (udc->driver->suspend)
+	if (udc->driver && udc->driver->suspend)
 		udc->driver->suspend(&udc->gadget);
 }
 
@@ -1847,7 +1898,7 @@ static void bus_resume(struct fsl_udc *udc)
 	udc->resume_state = 0;
 
 	/* report resume to the driver, serial.c does not support this */
-	if (udc->driver->resume)
+	if (udc->driver && udc->driver->resume)
 		udc->driver->resume(&udc->gadget);
 }
 
@@ -1861,7 +1912,8 @@ static int reset_queues(struct fsl_udc *udc)
 
 	/* report disconnect; the driver is already quiesced */
 	spin_unlock(&udc->lock);
-	udc->driver->disconnect(&udc->gadget);
+	if (udc->driver && udc->driver->disconnect)
+		udc->driver->disconnect(&udc->gadget);
 	spin_lock(&udc->lock);
 
 	return 0;
@@ -1942,6 +1994,26 @@ static void reset_irq(struct fsl_udc *udc)
 #endif
 }
 
+#if defined(CONFIG_ARCH_TEGRA)
+/*
+ * Restart device controller in the OTG mode on VBUS detection
+ */
+static void fsl_udc_restart(struct fsl_udc *udc)
+{
+	/* setup the controller in the device mode */
+	dr_controller_setup(udc);
+	/* setup EP0 for setup packet */
+	ep0_setup(udc);
+	/* start the controller */
+	dr_controller_run(udc);
+	/* initialize the USB and EP states */
+	udc->usb_state = USB_STATE_ATTACHED;
+	udc->ep0_state = WAIT_FOR_SETUP;
+	udc->ep0_dir = 0;
+	udc->vbus_active = 1;
+}
+#endif
+
 /*
  * USB device controller interrupt handler
  */
@@ -1951,7 +2023,11 @@ static irqreturn_t fsl_udc_irq(int irq, void *_udc)
 	u32 irq_src;
 	irqreturn_t status = IRQ_NONE;
 	unsigned long flags;
-
+#if defined(CONFIG_ARCH_TEGRA)
+/* compal indigo-Howard Chang 20110517 begin*/
+	u32 u32_vbus_sensor;
+/* compal indigo-Howard Chang 20110517 end */
+#endif
 	spin_lock_irqsave(&udc->lock, flags);
 
 	/* Disable ISR for OTG host mode */
@@ -2015,6 +2091,35 @@ static irqreturn_t fsl_udc_irq(int irq, void *_udc)
 	if (irq_src & (USB_STS_ERR | USB_STS_SYS_ERR)) {
 		VDBG("Error IRQ %x", irq_src);
 	}
+
+#if defined(CONFIG_ARCH_TEGRA)
+/* compal indigo-Howard Chang 20110517 begin*/
+//add new flow to detect usb client plug out
+	u32_vbus_sensor = __raw_readl(&usb_sys_regs->vbus_sensors);
+	/* compal indigo-Howard Chang 20100603 begin*/
+	if(u32_vbus_sensor & (1<< 17))
+	{
+		u32_vbus_sensor |= ((1 << 16)|(1 << 17));
+		__raw_writel(u32_vbus_sensor, &usb_sys_regs->vbus_sensors);
+		u32_vbus_sensor = __raw_readl(&usb_sys_regs->vbus_sensors);
+
+		if(u32_vbus_sensor & (1 << 18))
+		{
+			if(udc->u32_vbus_status  == 0)
+				udc->u32_vbus_status = 1;
+		}
+		else
+		{
+			if(udc->u32_vbus_status  == 1)
+			{
+				udc->u32_vbus_status = 0;
+				reset_irq(udc);
+			}
+		}                                           
+		/* compal indigo-Howard Chang 20100603 End*/
+	}
+/* compal indigo-Howard Chang 20110517 end */
+#endif
 
 	spin_unlock_irqrestore(&udc->lock, flags);
 	return status;
@@ -2529,6 +2634,9 @@ static int __init fsl_udc_probe(struct platform_device *pdev)
 	u32 dccparams;
 #if defined(CONFIG_ARCH_TEGRA)
 	struct resource *res_sys = NULL;
+/* compal indigo-Howard Chang 20110517 begin*/
+	u32 u32_vbus_sensor;
+/* compal indigo-Howard Chang 20110517 end */
 #endif
 
 	if (strcmp(pdev->name, driver_name)) {
@@ -2544,6 +2652,7 @@ static int __init fsl_udc_probe(struct platform_device *pdev)
 
 	spin_lock_init(&udc_controller->lock);
 	udc_controller->stopped = 1;
+	udc_controller->vbus_active = 1;
 
 	res = platform_get_resource(pdev, IORESOURCE_MEM, 0);
 	if (!res) {
@@ -2576,6 +2685,7 @@ static int __init fsl_udc_probe(struct platform_device *pdev)
 		usb_sys_regs = (struct usb_sys_interface *)
 			((u32)dr_regs + USB_DR_SYS_OFFSET);
 	}
+
 #endif
 
 #if !defined(CONFIG_ARCH_MXC) && !defined(CONFIG_ARCH_TEGRA)
@@ -2587,6 +2697,21 @@ static int __init fsl_udc_probe(struct platform_device *pdev)
 	ret = fsl_udc_clk_init(pdev);
 	if (ret < 0)
 		goto err_iounmap_noclk;
+
+/* compal indigo-Howard Chang 20110517 begin*/
+//add new flow to detect usb client plug out
+	u32_vbus_sensor = __raw_readl(&usb_sys_regs->vbus_sensors);
+	
+/* compal indigo-Howard Chang 20100603 begin*/
+	u32_vbus_sensor |= ((1 << 16) |(1 << 17));
+	__raw_writel(u32_vbus_sensor, &usb_sys_regs->vbus_sensors);
+	u32_vbus_sensor = __raw_readl(&usb_sys_regs->vbus_sensors);
+	if(u32_vbus_sensor & (1 << 18))
+		udc_controller->u32_vbus_status = 1;
+	else
+		udc_controller->u32_vbus_status = 0;
+/* compal indigo-Howard Chang 20100603 end*/
+/* compal indigo-Howard Chang 20110517 end */
 
 	/* Read Device Controller Capability Parameters register */
 	dccparams = fsl_readl(&dr_regs->dccparams);
@@ -2679,7 +2804,7 @@ static int __init fsl_udc_probe(struct platform_device *pdev)
 	if (udc_controller->transceiver) {
 		dr_controller_stop(udc_controller);
 		dr_controller_reset(udc_controller);
-		fsl_udc_clk_suspend();
+		fsl_udc_clk_suspend(false);
 		udc_controller->vbus_active = 0;
 		udc_controller->usb_state = USB_STATE_DEFAULT;
 		otg_set_peripheral(udc_controller->transceiver, &udc_controller->gadget);
@@ -2688,10 +2813,13 @@ static int __init fsl_udc_probe(struct platform_device *pdev)
 #ifdef CONFIG_ARCH_TEGRA
 	/* Power down the phy if cable is not connected */
 	if (!(fsl_readl(&usb_sys_regs->vbus_wakeup) & USB_SYS_VBUS_STATUS))
-		fsl_udc_clk_suspend();
+		fsl_udc_clk_suspend(false);
 #endif
 #endif
-
+	/* compal indigo-Howard Chang 20110504 begin */
+	//gadget driver whould not care vbus condition
+	udc_controller->vbus_active = 1;
+	/* compal indigo-Howard Chang 20110504 end */
 	return 0;
 
 err_unregister:
@@ -2756,12 +2884,27 @@ static int __exit fsl_udc_remove(struct platform_device *pdev)
  -----------------------------------------------------------------*/
 static int fsl_udc_suspend(struct platform_device *pdev, pm_message_t state)
 {
-	if (udc_controller->transceiver &&
-		    udc_controller->transceiver->state != OTG_STATE_B_PERIPHERAL)
-		return 0;
-
-	dr_controller_stop(udc_controller);
-	return 0;
+    if (udc_controller->transceiver) {
+        if (udc_controller->transceiver->state != OTG_STATE_B_PERIPHERAL) {
+            /* we are not in device mode, return */
+            return 0;
+        }
+    }
+    if (udc_controller->vbus_active) {
+        spin_lock(&udc_controller->lock);
+        /* Reset all internal Queues and inform client driver */
+        reset_queues(udc_controller);
+        udc_controller->vbus_active = 0;
+        udc_controller->usb_state = USB_STATE_DEFAULT;
+        spin_unlock(&udc_controller->lock);
+    }
+    /* stop the controller and turn off the clocks */
+    dr_controller_stop(udc_controller);
+    if (udc_controller->transceiver) {
+        udc_controller->transceiver->state = OTG_STATE_UNDEFINED;
+    }
+    fsl_udc_clk_suspend(true);
+    return 0;
 }
 
 /*-----------------------------------------------------------------
@@ -2770,19 +2913,46 @@ static int fsl_udc_suspend(struct platform_device *pdev, pm_message_t state)
  *-----------------------------------------------------------------*/
 static int fsl_udc_resume(struct platform_device *pdev)
 {
-	if (udc_controller->transceiver &&
-		    udc_controller->transceiver->state != OTG_STATE_B_PERIPHERAL)
-		return 0;
+    if (udc_controller->transceiver) {
 
-	/* Enable DR irq reg and set controller Run */
-	if (udc_controller->stopped) {
-		dr_controller_setup(udc_controller);
-		dr_controller_run(udc_controller);
-	}
-	udc_controller->usb_state = USB_STATE_ATTACHED;
-	udc_controller->ep0_state = WAIT_FOR_SETUP;
-	udc_controller->ep0_dir = 0;
-	return 0;
+        if (!(fsl_readl(&usb_sys_regs->vbus_wakeup) & USB_SYS_ID_PIN_STATUS)) {
+            /* If ID status is low means host is connected, return */
+	    return 0;
+        }
+        /* check for VBUS */
+        if (!(fsl_readl(&usb_sys_regs->vbus_wakeup) & USB_SYS_VBUS_STATUS)) {
+            /* if there is no VBUS then power down the clocks and return */
+            return 0;
+        } else {
+		fsl_udc_clk_resume(true);
+            /* Detected VBUS set the transceiver state to device mode */
+            udc_controller->transceiver->state = OTG_STATE_B_PERIPHERAL;
+        }
+    } else {
+        /* enable the clocks to the controller */
+        fsl_udc_clk_resume(true);
+    }
+
+#if defined(CONFIG_ARCH_TEGRA)
+    fsl_udc_restart(udc_controller);
+#else
+    /* Enable DR irq reg and set controller Run */
+    if (udc_controller->stopped) {
+        dr_controller_setup(udc_controller);
+        dr_controller_run(udc_controller);
+    }
+    udc_controller->usb_state = USB_STATE_ATTACHED;
+    udc_controller->ep0_state = WAIT_FOR_SETUP;
+    udc_controller->ep0_dir = 0;
+#endif
+    /* Power down the phy if cable is not connected */
+    	/* compal indigo-Howard Chang 20110526 begin */
+    /*
+    if (!(fsl_readl(&usb_sys_regs->vbus_wakeup) & USB_SYS_VBUS_STATUS))
+        fsl_udc_clk_suspend();
+    */
+    	/* compal indigo-Howard Chang 20110526 end */
+    return 0;
 }
 
 /*-------------------------------------------------------------------------

@@ -40,6 +40,7 @@ struct tegra_crypto_ctx {
 	struct crypto_ablkcipher *ecb_tfm;
 	struct crypto_ablkcipher *cbc_tfm;
 	struct crypto_rng *rng;
+	u8 seed[TEGRA_CRYPTO_RNG_SEED_SIZE];
 	int use_ssk;
 };
 
@@ -158,6 +159,7 @@ static int process_crypt_req(struct tegra_crypto_ctx *ctx, struct tegra_crypt_re
 	int ret = 0, size = 0;
 	unsigned long total = 0;
 	struct tegra_crypto_completion tcrypt_complete;
+	const u8 *key = NULL;
 
 	if (crypt_req->op & TEGRA_CRYPTO_ECB) {
 		req = ablkcipher_request_alloc(ctx->ecb_tfm, GFP_KERNEL);
@@ -176,13 +178,13 @@ static int process_crypt_req(struct tegra_crypto_ctx *ctx, struct tegra_crypt_re
 
 	crypto_ablkcipher_clear_flags(tfm, ~0);
 
-	if (!ctx->use_ssk) {
-		ret = crypto_ablkcipher_setkey(tfm, crypt_req->key,
-			crypt_req->keylen);
-		if (ret < 0) {
-			pr_err("setkey failed");
-			goto process_req_out;
-		}
+	if (!ctx->use_ssk)
+		key = crypt_req->key;
+
+	ret = crypto_ablkcipher_setkey(tfm, key, crypt_req->keylen);
+	if (ret < 0) {
+		pr_err("setkey failed");
+		goto process_req_out;
 	}
 
 	ret = alloc_bufs(xbuf);
@@ -199,7 +201,7 @@ static int process_crypt_req(struct tegra_crypto_ctx *ctx, struct tegra_crypt_re
 	total = crypt_req->plaintext_sz;
 	while (total > 0) {
 		size = min(total, PAGE_SIZE);
-		ret = copy_from_user(xbuf[0],
+		ret = copy_from_user((void *)xbuf[0],
 			(void __user *)crypt_req->plaintext, size);
 		if (ret < 0) {
 			pr_debug("%s: copy_from_user failed (%d)\n", __func__, ret);
@@ -234,8 +236,8 @@ static int process_crypt_req(struct tegra_crypto_ctx *ctx, struct tegra_crypt_re
 			goto process_req_buf_out;
 		}
 
-		ret = copy_to_user((void __user *)crypt_req->result, xbuf[1],
-			size);
+		ret = copy_to_user((void __user *)crypt_req->result,
+			(const void *)xbuf[1], size);
 		if (ret < 0)
 			goto process_req_buf_out;
 
@@ -279,7 +281,9 @@ static long tegra_crypto_dev_ioctl(struct file *filp,
 		if (copy_from_user(&rng_req, (void __user *)arg, sizeof(rng_req)))
 			return -EFAULT;
 
-		ret = crypto_rng_reset(ctx->rng, rng_req.seed,
+		memcpy(ctx->seed, rng_req.seed, TEGRA_CRYPTO_RNG_SEED_SIZE);
+
+		ret = crypto_rng_reset(ctx->rng, ctx->seed,
 			crypto_rng_seedsize(ctx->rng));
 		break;
 	case TEGRA_CRYPTO_IOCTL_GET_RANDOM:
@@ -293,7 +297,8 @@ static long tegra_crypto_dev_ioctl(struct file *filp,
 			goto rng_out;
 		}
 
-		ret = crypto_rng_get_bytes(ctx->rng, rng, rng_req.nbytes);
+		ret = crypto_rng_get_bytes(ctx->rng, rng,
+			rng_req.nbytes);
 
 		if (ret != rng_req.nbytes) {
 			pr_debug("rng failed");
@@ -302,7 +307,7 @@ static long tegra_crypto_dev_ioctl(struct file *filp,
 		}
 
 		ret = copy_to_user((void __user *)rng_req.rdata,
-			rng, rng_req.nbytes);
+			(const void *)rng, rng_req.nbytes);
 		ret = (ret < 0) ? -ENODATA : 0;
 rng_out:
 		if (rng)

@@ -52,7 +52,7 @@ static inline void arch_decomp_setup(void)
 		return;
 
 	uart[UART_LCR << shift] |= UART_LCR_DLAB;
-	uart[UART_DLL << shift] = 0xe;
+	uart[UART_DLL << shift] = 0x75;
 	uart[UART_DLM << shift] = 0x0;
 	uart[UART_LCR << shift] = 3;
 }

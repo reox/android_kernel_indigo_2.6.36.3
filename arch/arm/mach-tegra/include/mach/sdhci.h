@@ -18,19 +18,29 @@
 #define __ASM_ARM_ARCH_TEGRA_SDHCI_H
 
 #include <linux/mmc/host.h>
-#include <asm/mach/mmc.h>
+#include <linux/mmc/card.h>
 
 struct tegra_sdhci_platform_data {
 	const char *clk_id;
 	int force_hs;
-	int rt_disable;
 	int cd_gpio;
 	int wp_gpio;
 	int power_gpio;
-	struct mmc_platform_data mmc_data;
+	int bus_width;
+	int cd_gpio_polarity;
 
 	void (*board_probe)(int id, struct mmc_host *);
 	void (*board_remove)(int id, struct mmc_host *);
+
+	/* embedded sdio data */
+	struct sdio_cis cis;
+	struct sdio_cccr cccr;
+	struct sdio_embedded_func *funcs;
+	int num_funcs;
+
+	/* card detect callback registration function */
+	int (*register_status_notify)(void (*callback)(int card_present,
+				void *dev_id), void *dev_id);
 };
 
 #endif

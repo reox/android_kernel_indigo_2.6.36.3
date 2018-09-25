@@ -173,6 +173,16 @@ static struct resource spi_resource4[] = {
 	},
 };
 
+struct platform_device tegra_spi_slave_device1 = {
+	.name           = "tegra_spi_slave",
+	.id             = 0,
+	.resource       = spi_resource1,
+	.num_resources  = ARRAY_SIZE(spi_resource1),
+	.dev  = {
+		.coherent_dma_mask      = 0xffffffff,
+	},
+};
+
 struct platform_device tegra_spi_device1 = {
 	.name           = "spi_tegra",
 	.id             = 0,
@@ -518,6 +528,21 @@ struct platform_device tegra_spdif_device = {
 	.num_resources	= ARRAY_SIZE(spdif_resource),
 };
 
+static struct resource das_resource[] = {
+	[0] = {
+		.start	= TEGRA_APB_MISC_BASE,
+		.end	= TEGRA_APB_MISC_BASE + TEGRA_APB_MISC_SIZE - 1,
+		.flags	= IORESOURCE_MEM
+	}
+};
+
+struct platform_device tegra_das_device = {
+	.name		= "tegra_das",
+	.id		= -1,
+	.resource	= das_resource,
+	.num_resources	= ARRAY_SIZE(das_resource),
+};
+
 static struct resource tegra_gart_resources[] = {
 	[0] = {
 		.name	= "mc",
@@ -826,6 +851,11 @@ static struct resource tegra_aes_resources[] = {
 	{
 		.start	= TEGRA_VDE_BASE,
 		.end	= TEGRA_VDE_BASE + TEGRA_VDE_SIZE - 1,
+		.flags	= IORESOURCE_MEM,
+	},
+	{
+		.start	= TEGRA_BSEA_BASE,
+		.end	= TEGRA_BSEA_BASE + TEGRA_BSEA_SIZE - 1,
 		.flags	= IORESOURCE_MEM,
 	},
 };

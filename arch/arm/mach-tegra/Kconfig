@@ -24,7 +24,6 @@ comment "Tegra board type"
 
 config MACH_HARMONY
        bool "Harmony board"
-       select TEGRA_DEBUG_UARTD
        help
          Support for NVIDIA Harmony development platform
 
@@ -33,17 +32,10 @@ config MACH_VENTANA
        help
          Support for NVIDIA Ventana development platform
 
-config MACH_OLYMPUS
-       bool "Olympus board"
-       select TEGRA_DEBUG_UARTB
+config MACH_WHISTLER
+       bool "Whistler board"
        help
-	 Support for Olympus development platform
-
-config MACH_STINGRAY
-       bool "Stingray board"
-       select TEGRA_DEBUG_UARTB
-       help
-	 Support for Stingray development platform
+         Support for NVIDIA Whistler development platform
 
 choice
         prompt "Low-level debug console UART"
@@ -76,6 +68,13 @@ config TEGRA_SYSTEM_DMA
 	  Adds system DMA functionality for NVIDIA Tegra SoCs, used by
 	  several Tegra device drivers
 
+config TEGRA_SPI_SLAVE
+       tristate "Nvidia Tegra SPI slave driver"
+       depends on ARCH_TEGRA
+       select TEGRA_SYSTEM_DMA
+       help
+         SPI slave driver for NVIDIA Tegra SoCs
+
 config TEGRA_PWM
 	tristate "Enable PWM driver"
 	select HAVE_PWM
@@ -89,10 +88,7 @@ config TEGRA_FIQ_DEBUGGER
 	help
 	  Enables the FIQ serial debugger on Tegra"
 
-config WIFI_CONTROL_FUNC
-	bool "Enable WiFi control function abstraction"
-	help
-	  Enables Power/Reset/Carddetect function abstraction
+source "arch/arm/mach-tegra/nv/Kconfig"
 
 endif
 
@@ -131,3 +127,16 @@ config TEGRA_THERMAL_THROTTLE
        default y
        help
          Also requires enabling a temperature sensor such as NCT1008.
+
+config TEGRA_CLOCK_DEBUG_WRITE
+	bool "Enable debugfs write access to clock tree"
+	depends on DEBUG_FS
+	default n
+
+config TEGRA_MC_PROFILE
+	tristate "Enable profiling memory controller utilization"
+	default n
+	help
+	  When enabled, provides a mechanism to perform statistical
+	  sampling of the memory controller usage on a client-by-client
+	  basis, and report the log through sysfs.

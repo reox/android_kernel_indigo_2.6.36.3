@@ -326,7 +326,10 @@
 #define  DRIVE_CURRENT_6_000_mA			0x0c
 #define  DRIVE_CURRENT_6_375_mA			0x0d
 #define  DRIVE_CURRENT_6_750_mA			0x0e
-#define  DRIVE_CURRENT_7_125_mA			0x0f
+/* carry-0601 begin */
+/* decrease EMI noise */
+#define  DRIVE_CURRENT_7_125_mA			0x00
+/* carry-0601 end */
 #define  DRIVE_CURRENT_7_500_mA			0x10
 #define  DRIVE_CURRENT_7_875_mA			0x11
 #define  DRIVE_CURRENT_8_250_mA			0x12
@@ -428,6 +431,22 @@
 #define  PE_CURRENT1(x)				(((x) & 0xf) << 8)
 #define  PE_CURRENT2(x)				(((x) & 0xf) << 16)
 #define  PE_CURRENT3(x)				(((x) & 0xf) << 24)
+#define  PE_CURRENT_0_0_mA			0x0
+#define  PE_CURRENT_0_5_mA			0x1
+#define  PE_CURRENT_1_0_mA			0x2
+#define  PE_CURRENT_1_5_mA			0x3
+#define  PE_CURRENT_2_0_mA			0x4
+#define  PE_CURRENT_2_5_mA			0x5
+#define  PE_CURRENT_3_0_mA			0x6
+#define  PE_CURRENT_3_5_mA			0x7
+#define  PE_CURRENT_4_0_mA			0x8
+#define  PE_CURRENT_4_5_mA			0x9
+#define  PE_CURRENT_5_0_mA			0xa
+#define  PE_CURRENT_5_5_mA			0xb
+#define  PE_CURRENT_6_0_mA			0xc
+#define  PE_CURRENT_6_5_mA			0xd
+#define  PE_CURRENT_7_0_mA			0xe
+#define  PE_CURRENT_7_5_mA			0xf
 
 #define HDMI_NV_PDISP_KEY_CTRL					0x9a
 #define  LOCAL_KEYS				(1 << 0)

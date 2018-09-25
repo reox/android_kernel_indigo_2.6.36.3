@@ -1,5 +1,7 @@
-/*
- * Copyright (c) 2008-2009, Kionix, Inc. All Rights Reserved.
+/* include/linux/kxtf9.h - KXTF9 accelerometer driver
+ *
+ * Copyright (C) 2010 Kionix, Inc.
+ * Written by Kuching Tan <kuchingtan@kionix.com>
  *
  * This program is free software: you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -19,35 +21,21 @@
 #ifndef __KXTF9_H__
 #define __KXTF9_H__
 
-#include <linux/ioctl.h>  /* For IOCTL macros */
-
-/** This define controls compilation of the master device interface */
-/*#define KXTF9_MASTER_DEVICE*/
-
-#define KXTF9_IOCTL_BASE 77
-/** The following define the IOCTL command values via the ioctl macros */
-#define KXTF9_IOCTL_SET_DELAY		_IOW(KXTF9_IOCTL_BASE, 0, int)
-#define KXTF9_IOCTL_GET_DELAY		_IOR(KXTF9_IOCTL_BASE, 1, int)
-#define KXTF9_IOCTL_SET_ENABLE		_IOW(KXTF9_IOCTL_BASE, 2, int)
-#define KXTF9_IOCTL_GET_ENABLE		_IOR(KXTF9_IOCTL_BASE, 3, int)
-#define KXTF9_IOCTL_SET_G_RANGE		_IOW(KXTF9_IOCTL_BASE, 4, int)
-
-#define KXTF9_IOCTL_SET_TILT_ENABLE	_IOW(KXTF9_IOCTL_BASE, 5, int)
-#define KXTF9_IOCTL_SET_TAP_ENABLE	_IOW(KXTF9_IOCTL_BASE, 6, int)
-#define KXTF9_IOCTL_SET_WAKE_ENABLE	_IOW(KXTF9_IOCTL_BASE, 7, int)
-#define KXTF9_IOCTL_SET_PM_MODE		_IOW(KXTF9_IOCTL_BASE, 8, int)
-#define KXTF9_IOCTL_SELF_TEST		_IOW(KXTF9_IOCTL_BASE, 9, int)
-#define KXTF9_IOCTL_SET_SENSITIVITY     _IOW(KXTF9_IOCTL_BASE, 10, int)
-
-/* CONTROL REGISTER 1 BITS */
+#define KXTF9_I2C_ADDR	0x0F
+/* CTRL_REG1 BITS */
 #define RES_12BIT		0x40
-#define KXTF9_G_2G		0x00
-#define KXTF9_G_4G		0x08
-#define KXTF9_G_8G		0x10
-#define TPE			0x01	/* tilt position function enable bit */
+#define KXTF9_G_2G 		0x00
+#define KXTF9_G_4G 		0x08
+#define KXTF9_G_8G 		0x10
+#define SHIFT_ADJ_2G	4
+#define SHIFT_ADJ_4G	3
+#define SHIFT_ADJ_8G	2
+#define TPE				0x01	/* tilt position function enable bit */
 #define WUFE			0x02	/* wake-up function enable bit */
 #define TDTE			0x04	/* tap/double-tap function enable bit */
-/* CONTROL REGISTER 3 BITS */
+/* CTRL_REG3 BITS */
+#define SRST			0x80	/* software reset */
+#define DCST			0x10	/* communication-test function */
 #define OTP1_6			0x00	/* tilt ODR masks */
 #define OTP6_3			0x20
 #define OTP12_5			0x40
@@ -60,20 +48,49 @@
 #define OTDT100			0x04
 #define OTDT200			0x08
 #define OTDT400			0x0C
-/* INTERRUPT CONTROL REGISTER 1 BITS */
-#define IEN			0x20	/* interrupt enable */
-#define IEA			0x10	/* interrupt polarity */
-#define IEL			0x08	/* interrupt response */
-#define IEU			0x04	/* alternate unlatched response */
-/* DATA CONTROL REGISTER BITS */
-#define ODR800			0x06	/* lpf output ODR masks */
-#define ODR400			0x05
-#define ODR200			0x04
-#define ODR100			0x03
-#define ODR50			0x02
-#define ODR25			0x01
+/* INT_CTRL_REG1 BITS */
+#define KXTF9_IEN		0x20	/* interrupt enable */
+#define KXTF9_IEA		0x10	/* interrupt polarity */
+#define KXTF9_IEL		0x08	/* interrupt response */
+#define IEU				0x04	/* alternate unlatched response */
+/* DATA_CTRL_REG BITS */
+#define ODR800F			0x06	/* lpf output ODR masks */
+#define ODR400F			0x05
+#define ODR200F			0x04
+#define ODR100F			0x03
+#define ODR50F			0x02
+#define ODR25F			0x01
 
-#define SENSITIVITY_REGS 0x07
+/* Device Meta Data */
+#define DESC_DEV		"KXTF9 3-axis Accelerometer"	// Device Description
+#define VERSION_DEV		"1.1.7"
+#define VER_MAJOR_DEV	1
+#define	VER_MINOR_DEV	1
+#define VER_MAINT_DEV	7
+#define	MAX_G_DEV		(8.0f)		// Maximum G Level
+#define	MAX_SENS_DEV	(1024.0f)	// Maximum Sensitivity
+#define PWR_DEV			(0.57f)		// Typical Current
+
+/* Input Device Name */
+#define INPUT_NAME_ACC	"kxtf9_accel"
+
+/* Device name for kxtf9 misc. device */
+#define NAME_DEV	"kxtf9"
+#define DIR_DEV		"/dev/kxtf9"
+
+/* IOCTLs for kxtf9 misc. device library */
+#define KXTF9IO									0x94
+#define KXTF9_IOCTL_GET_COUNT			_IOR(KXTF9IO, 0x01, int)
+#define KXTF9_IOCTL_GET_MG				_IOR(KXTF9IO, 0x02, int)
+#define KXTF9_IOCTL_ENABLE_OUTPUT		 _IO(KXTF9IO, 0x03)
+#define KXTF9_IOCTL_DISABLE_OUTPUT		 _IO(KXTF9IO, 0x04)
+#define KXTF9_IOCTL_GET_ENABLE			_IOR(KXTF9IO, 0x05, int)
+#define KXTF9_IOCTL_RESET				 _IO(KXTF9IO, 0x06)
+#define KXTF9_IOCTL_UPDATE_ODR			_IOW(KXTF9IO, 0x07, int)
+#define KXTF9_IOCTL_ENABLE_DCST			 _IO(KXTF9IO, 0x08)
+#define KXTF9_IOCTL_DISABLE_DCST		 _IO(KXTF9IO, 0x09)
+#define KXTF9_IOCTL_GET_DCST_RESP		_IOR(KXTF9IO, 0x0A, int)
+
 
 #ifdef __KERNEL__
 struct kxtf9_platform_data {
@@ -81,6 +98,8 @@ struct kxtf9_platform_data {
 	int min_interval;
 
 	u8 g_range;
+	u8 shift_adj;
+	u8 mul_fac;
 
 	u8 axis_map_x;
 	u8 axis_map_y;
@@ -105,14 +124,13 @@ struct kxtf9_platform_data {
 	u8 tdt_latency_timer_init;
 	u8 tdt_window_timer_init;
 
-	int (*gpio)(void);
+	int (*init)(void);
+	void (*exit)(void);
+	int (*power_on)(void);
+	int (*power_off)(void);
 
-	u8 gesture;
-	u8 sensitivity_low[SENSITIVITY_REGS];
-	u8 sensitivity_medium[SENSITIVITY_REGS];
-	u8 sensitivity_high[SENSITIVITY_REGS];
+	int gpio;
 };
-
 #endif /* __KERNEL__ */
 
 #endif  /* __KXTF9_H__ */

@@ -24,6 +24,10 @@
 #include <linux/delay.h>
 #include <linux/highmem.h>
 #include <linux/memblock.h>
+#include <linux/notifier.h>
+#include <linux/reboot.h>
+#include <linux/mqueue.h>
+#include <linux/bitops.h>
 
 #include <asm/hardware/cache-l2x0.h>
 #include <asm/system.h>
@@ -42,13 +46,12 @@
 
 #define AHB_ARBITRATION_PRIORITY_CTRL		0x4
 #define   AHB_PRIORITY_WEIGHT(x)	(((x) & 0x7) << 29)
-#define   PRIORITY_SELECT_USB BIT(6)
-#define   PRIORITY_SELECT_USB2 BIT(18)
-#define   PRIORITY_SELECT_USB3 BIT(17)
+#define   PRIORITY_SELECT_USB	BIT(6)
+#define   PRIORITY_SELECT_USB2	BIT(18)
+#define   PRIORITY_SELECT_USB3	BIT(17)
 
 #define AHB_GIZMO_AHB_MEM		0xc
-#define   ENB_FAST_REARBITRATE BIT(2)
-#define   DONT_SPLIT_AHB_WR     BIT(7)
+#define   ENB_FAST_REARBITRATE	BIT(2)
 
 #define AHB_GIZMO_USB		0x1c
 #define AHB_GIZMO_USB2		0x78
@@ -79,6 +82,21 @@ unsigned long tegra_carveout_size;
 unsigned long tegra_lp0_vec_start;
 unsigned long tegra_lp0_vec_size;
 unsigned long tegra_grhost_aperture;
+static   bool is_tegra_debug_uart_hsport;
+
+/* Charles 0511 start 
+* Set backlight disable when power on cause by charging*/
+unsigned long tegra_charging;
+/* Charles 0511 end*/
+extern void SysRestart(void );
+
+static struct board_info tegra_board_info = {
+	.board_id = -1,
+	.sku = -1,
+	.fab = -1,
+	.major_revision = -1,
+	.minor_revision = -1,
+};
 
 void (*tegra_reset)(char mode, const char *cmd);
 
@@ -86,6 +104,7 @@ static __initdata struct tegra_clk_init_table common_clk_init_table[] = {
 	/* set up clocks that should always be on */
 	/* name		parent		rate		enabled */
 	{ "clk_m",	NULL,		0,		true },
+	{ "pll_m",	"clk_m",	600000000,	true },
 	{ "pll_p",	"clk_m",	216000000,	true },
 	{ "pll_p_out1",	"pll_p",	28800000,	true },
 	{ "pll_p_out2",	"pll_p",	48000000,	true },
@@ -116,9 +135,21 @@ void __init tegra_init_cache(void)
 #ifdef CONFIG_CACHE_L2X0
 	void __iomem *p = IO_ADDRESS(TEGRA_ARM_PERIF_BASE) + 0x3000;
 
+#ifndef CONFIG_TRUSTED_FOUNDATIONS
+   /*
+   ISSUE : Some registers of PL310 controler must be called from Secure context!
+            When called form Normal we obtain an abort.
+            Instructions that must be called in Secure :
+               - Tag and Data RAM Latency Control Registers (0x108 & 0x10C) must be written in Secure.
+        
+   The following section of code has been regrouped in the implementation of "l2x0_init".
+   The "l2x0_init" will in fact call an SMC intruction to switch from Normal context to Secure context.
+   The configuration and activation will be done in Secure.
+   */
 	writel(0x331, p + L2X0_TAG_LATENCY_CTRL);
 	writel(0x441, p + L2X0_DATA_LATENCY_CTRL);
 	writel(2, p + L2X0_PWR_CTRL);
+#endif
 
 	l2x0_init(p, 0x6C480001, 0x8200c3fe);
 #endif
@@ -128,7 +159,8 @@ void __init tegra_init_cache(void)
 static void __init tegra_init_power(void)
 {
 	tegra_powergate_power_off(TEGRA_POWERGATE_MPE);
-	tegra_powergate_power_off(TEGRA_POWERGATE_3D);
+	//tegra_powergate_power_off(TEGRA_POWERGATE_3D);
+	tegra_powergate_power_off(TEGRA_POWERGATE_PCIE);
 }
 
 static inline unsigned long gizmo_readl(unsigned long offset)
@@ -146,7 +178,7 @@ static void __init tegra_init_ahb_gizmo_settings(void)
 	unsigned long val;
 
 	val = gizmo_readl(AHB_GIZMO_AHB_MEM);
-	val |= ENB_FAST_REARBITRATE | IMMEDIATE | DONT_SPLIT_AHB_WR;
+	val |= ENB_FAST_REARBITRATE;
 	gizmo_writel(val, AHB_GIZMO_AHB_MEM);
 
 	val = gizmo_readl(AHB_GIZMO_USB);
@@ -187,20 +219,21 @@ static void __init tegra_init_ahb_gizmo_settings(void)
 	gizmo_writel(val, AHB_MEM_PREFETCH_CFG4);
 }
 
-
 static bool console_flushed;
 
-static void tegra_pm_flush_console(void)
+static int tegra_pm_flush_console(struct notifier_block *this,
+	unsigned long code,
+	void *unused)
 {
 	if (console_flushed)
-		return;
+		return NOTIFY_NONE;
 	console_flushed = true;
 
 	printk("\n");
 	pr_emerg("Restarting %s\n", linux_banner);
 	if (!try_acquire_console_sem()) {
 		release_console_sem();
-		return;
+		return NOTIFY_NONE;
 	}
 
 	mdelay(50);
@@ -211,17 +244,24 @@ static void tegra_pm_flush_console(void)
 	else
 		pr_emerg("tegra_restart: Console was locked!\n");
 	release_console_sem();
+
+	return NOTIFY_NONE;
 }
 
 static void tegra_pm_restart(char mode, const char *cmd)
-{
-	tegra_pm_flush_console();
-	arm_machine_restart(mode, cmd);
+{	
+	SysRestart();
+	//arm_machine_restart(mode, cmd);
 }
+
+static struct notifier_block tegra_reboot_notifier = {
+	.notifier_call = tegra_pm_flush_console,
+};
 
 void __init tegra_common_init(void)
 {
 	arm_pm_restart = tegra_pm_restart;
+	register_reboot_notifier(&tegra_reboot_notifier);
 	tegra_init_fuse();
 	tegra_init_clock();
 	tegra_clk_init_from_table(common_clk_init_table);
@@ -258,6 +298,87 @@ static int __init tegra_lp0_vec_arg(char *options)
 	return 0;
 }
 early_param("lp0_vec", tegra_lp0_vec_arg);
+
+/* Charles 0511 start 
+* Set backlight disable when power on cause by charging*/
+static int __init tegra_charging_arg(char *options)
+{
+	char *p = options;
+
+	tegra_charging = memparse(p, &p);
+	pr_info("Found charging: %08lx\n", tegra_charging);
+
+	return 0;
+}
+early_param("charging", tegra_charging_arg);
+/* Charles 0511 end */
+
+static int __init tegra_board_info_parse(char *info)
+{
+	char *p;
+	int pos = 0;
+	struct board_info *bi = &tegra_board_info;
+
+	while (info && *info) {
+		if ((p = strchr(info, ':')))
+			*p++ = '\0';
+
+		if (strlen(info) > 0) {
+			switch(pos) {
+			case 0:
+				bi->board_id = simple_strtol(info, NULL, 16);
+				break;
+			case 1:
+				bi->sku = simple_strtol(info, NULL, 16);
+				break;
+			case 2:
+				bi->fab = simple_strtol(info, NULL, 16);
+				break;
+			case 3:
+				bi->major_revision = simple_strtol(info, NULL, 16);
+				break;
+			case 4:
+				bi->minor_revision = simple_strtol(info, NULL, 16);
+				break;
+			default:
+				break;
+			}
+		}
+
+		info = p;
+		pos++;
+	}
+
+	pr_info("board info: Id:%d%2d SKU:%d Fab:%d Rev:%c MinRev:%d\n",
+			bi->board_id >> 8 & 0xFF, bi->board_id & 0xFF,
+			bi->sku, bi->fab, bi->major_revision, bi->minor_revision);
+
+	return 1;
+}
+
+__setup("board_info=", tegra_board_info_parse);
+
+static int __init tegra_debug_uartport(char *info)
+{
+	if (!strcmp(info, "hsport"))
+		is_tegra_debug_uart_hsport = true;
+	else if (!strcmp(info, "lsport"))
+		is_tegra_debug_uart_hsport = false;
+
+	return 1;
+}
+
+bool is_tegra_debug_uartport_hs(void)
+{
+	return is_tegra_debug_uart_hsport;
+}
+
+__setup("debug_uartport=", tegra_debug_uartport);
+
+void tegra_get_board_info(struct board_info *bi)
+{
+	memcpy(bi, &tegra_board_info, sizeof(*bi));
+}
 
 /*
  * Tegra has a protected aperture that prevents access by most non-CPU

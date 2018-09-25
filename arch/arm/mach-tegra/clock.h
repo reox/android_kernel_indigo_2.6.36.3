@@ -42,6 +42,8 @@
 #define PLLU			(1 << 14)
 #define ENABLE_ON_INIT		(1 << 28)
 
+#define MAX_SAME_LIMIT_SKU_IDS	16
+
 struct clk;
 
 struct clk_mux_sel {
@@ -130,6 +132,13 @@ struct clk {
 			struct clk			*backup;
 		} cpu;
 		struct {
+			struct clk			*pclk;
+			struct clk			*hclk;
+			struct clk			*sclk_low;
+			struct clk			*sclk_high;
+			unsigned long			threshold;
+		} system;
+		struct {
 			struct list_head		node;
 			bool				enabled;
 			unsigned long			rate;
@@ -152,6 +161,12 @@ struct tegra_clk_init_table {
 	bool enabled;
 };
 
+struct tegra_sku_rate_limit {
+	const char *clk_name;
+	unsigned long max_rate;
+	int sku_ids[MAX_SAME_LIMIT_SKU_IDS];
+};
+
 void tegra2_init_clocks(void);
 void tegra2_periph_reset_deassert(struct clk *c);
 void tegra2_periph_reset_assert(struct clk *c);
@@ -163,5 +178,16 @@ void tegra_clk_init_from_table(struct tegra_clk_init_table *table);
 void clk_set_cansleep(struct clk *c);
 unsigned long clk_get_rate_locked(struct clk *c);
 void tegra2_sdmmc_tap_delay(struct clk *c, int delay);
+
+#ifdef CONFIG_CPU_FREQ
+struct cpufreq_frequency_table;
+
+struct tegra_cpufreq_table_data {
+	struct cpufreq_frequency_table *freq_table;
+	int throttle_lowest_index;
+	int throttle_highest_index;
+};
+struct tegra_cpufreq_table_data *tegra_cpufreq_table_get(void);
+#endif
 
 #endif

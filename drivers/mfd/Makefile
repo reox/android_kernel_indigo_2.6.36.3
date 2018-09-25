@@ -76,16 +76,5 @@ obj-$(CONFIG_MFD_RDC321X)	+= rdc321x-southbridge.o
 obj-$(CONFIG_MFD_JANZ_CMODIO)	+= janz-cmodio.o
 obj-$(CONFIG_MFD_JZ4740_ADC)	+= jz4740-adc.o
 obj-$(CONFIG_MFD_TPS6586X)	+= tps6586x.o
-
-cpcap-objs			:= cpcap-core.o \
-				   cpcap-irq.o \
-				   cpcap-regacc.o \
-				   cpcap-key.o \
-				   cpcap-whisper.o \
-				   cpcap-adc.o \
-				   cpcap-uc.o \
-				   cpcap-3mm5.o \
-				   tegra-cpcap-audio.o \
-				   cpcap-audio-core.o
-
-obj-$(CONFIG_MFD_CPCAP)		+= cpcap.o
+obj-$(CONFIG_MFD_MAX8907C)	+= max8907c.o
+obj-$(CONFIG_MFD_MAX8907C)	+= max8907c-irq.o

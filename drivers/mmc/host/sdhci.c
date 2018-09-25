@@ -1125,11 +1125,15 @@ static void sdhci_request(struct mmc_host *mmc, struct mmc_request *mrq)
 	host->mrq = mrq;
 
 	/* If polling, assume that the card is always present. */
-	if (host->quirks & SDHCI_QUIRK_BROKEN_CARD_DETECTION)
-		present = true;
-	else
+	if (host->quirks & SDHCI_QUIRK_BROKEN_CARD_DETECTION) {
+		if (host->ops->card_detect)
+			present = host->ops->card_detect(host);
+		else
+			present = true;
+	} else {
 		present = sdhci_readl(host, SDHCI_PRESENT_STATE) &
 				SDHCI_CARD_PRESENT;
+	}
 
 	if (!present || host->flags & SDHCI_DEVICE_DEAD) {
 		host->mrq->cmd->error = -ENOMEDIUM;
@@ -1229,31 +1233,6 @@ static int sdhci_get_ro(struct mmc_host *mmc)
 	return present;
 }
 
-static int sdhci_enable(struct mmc_host *mmc)
-{
-       struct sdhci_host *host = mmc_priv(mmc);
-
-       if (!mmc->card || mmc->card->type == MMC_TYPE_SDIO)
-               return 0;
-
-       if (mmc->ios.clock)
-               sdhci_set_clock(host, mmc->ios.clock);
-
-       return 0;
-}
-
-static int sdhci_disable(struct mmc_host *mmc, int lazy)
-{
-       struct sdhci_host *host = mmc_priv(mmc);
-
-       if (!mmc->card || mmc->card->type == MMC_TYPE_SDIO)
-               return 0;
-
-       sdhci_set_clock(host, 0);
-
-       return 0;
-}
-
 static void sdhci_enable_sdio_irq(struct mmc_host *mmc, int enable)
 {
 	struct sdhci_host *host;
@@ -1286,11 +1265,36 @@ out:
 	spin_unlock_irqrestore(&host->lock, flags);
 }
 
+int sdhci_enable(struct mmc_host *mmc)
+{
+	struct sdhci_host *host = mmc_priv(mmc);
+
+	if (!mmc->card || mmc->card->type == MMC_TYPE_SDIO)
+		return 0;
+
+	if (mmc->ios.clock)
+		sdhci_set_clock(host, mmc->ios.clock);
+
+	return 0;
+}
+
+int sdhci_disable(struct mmc_host *mmc, int lazy)
+{
+	struct sdhci_host *host = mmc_priv(mmc);
+
+	if (!mmc->card || mmc->card->type == MMC_TYPE_SDIO)
+		return 0;
+
+	sdhci_set_clock(host, 0);
+
+	return 0;
+}
+
 static const struct mmc_host_ops sdhci_ops = {
 	.request	= sdhci_request,
 	.set_ios	= sdhci_set_ios,
 	.get_ro		= sdhci_get_ro,
-	.enable 	= sdhci_enable,
+	.enable	= sdhci_enable,
 	.disable	= sdhci_disable,
 	.enable_sdio_irq = sdhci_enable_sdio_irq,
 };
@@ -1298,10 +1302,17 @@ static const struct mmc_host_ops sdhci_ops = {
 void sdhci_card_detect_callback(struct sdhci_host *host)
 {
 	unsigned long flags;
+	int present;
 
 	spin_lock_irqsave(&host->lock, flags);
 
-	if (!(sdhci_readl(host, SDHCI_PRESENT_STATE) & SDHCI_CARD_PRESENT)) {
+	if ((host->quirks & SDHCI_QUIRK_BROKEN_CARD_DETECTION) &&
+		host->ops->card_detect)
+			present = host->ops->card_detect(host);
+		else
+			present = (sdhci_readl(host, SDHCI_PRESENT_STATE) & SDHCI_CARD_PRESENT);
+
+	if (!present) {
 		if (host->mrq) {
 			printk(KERN_ERR "%s: Card removed during transfer!\n",
 				mmc_hostname(host->mmc));
@@ -1895,13 +1906,13 @@ int sdhci_add_host(struct sdhci_host *host)
 	if (host->quirks & SDHCI_QUIRK_FORCE_HIGH_SPEED_MODE)
 		mmc->caps |= MMC_CAP_FORCE_HS;
 
-	if (host->quirks & SDHCI_QUIRK_BROKEN_CARD_DETECTION)
-		mmc->caps |= MMC_CAP_NEEDS_POLL;
-
-	if (host->quirks & SDHCI_QUIRK_RUNTIME_DISABLE) {
-		mmc->caps |= MMC_CAP_DISABLE;
-		mmc_set_disable_delay(mmc, 50);
+	if (host->quirks & SDHCI_QUIRK_BROKEN_CARD_DETECTION) {
+		if (!host->ops->card_detect)
+			mmc->caps |= MMC_CAP_NEEDS_POLL;
 	}
+
+	if (host->quirks & SDHCI_QUIRK_RUNTIME_DISABLE)
+		mmc->caps |= MMC_CAP_DISABLE;
 
 	mmc->caps |= MMC_CAP_ERASE;
 

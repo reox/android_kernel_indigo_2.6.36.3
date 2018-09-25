@@ -172,12 +172,12 @@ static const char *pupd_name(unsigned long val)
 
 static inline unsigned long pg_readl(unsigned long offset)
 {
-	return readl(IO_TO_VIRT(TEGRA_APB_MISC_BASE + offset));
+	return readl(IO_TO_VIRT(TEGRA_APB_MISC_BASE) + offset);
 }
 
 static inline void pg_writel(unsigned long value, unsigned long offset)
 {
-	writel(value, IO_TO_VIRT(TEGRA_APB_MISC_BASE + offset));
+	writel(value, IO_TO_VIRT(TEGRA_APB_MISC_BASE) + offset);
 }
 
 static int tegra_pinmux_set_func(const struct tegra_pingroup_config *config)
@@ -225,6 +225,28 @@ static int tegra_pinmux_set_func(const struct tegra_pingroup_config *config)
 	spin_unlock_irqrestore(&mux_lock, flags);
 
 	return 0;
+}
+
+int tegra_pinmux_get_func(enum tegra_pingroup pg)
+{
+	int mux = -1;
+	unsigned long reg;
+	unsigned long flags;
+
+	if (pg < 0 || pg >=  TEGRA_MAX_PINGROUP)
+		return -ERANGE;
+
+	if (pingroups[pg].mux_reg < 0)
+		return -EINVAL;
+
+	spin_lock_irqsave(&mux_lock, flags);
+
+	reg = pg_readl(pingroups[pg].mux_reg);
+	mux = (reg >> pingroups[pg].mux_bit) & 0x3;
+
+	spin_unlock_irqrestore(&mux_lock, flags);
+
+	return mux;
 }
 
 int tegra_pinmux_set_tristate(enum tegra_pingroup pg,
@@ -459,22 +481,8 @@ static int tegra_drive_pinmux_set_pull_up(enum tegra_drive_pingroup pg,
 	spin_lock_irqsave(&mux_lock, flags);
 
 	reg = pg_readl(drive_pingroups[pg].reg);
-
-	/*
-	 * 12 is the wrong offset for pull_up drive strength.  This is
-	 * a hack for stingray to only use the correct offset for the DDC and
-	 * external SD card lines to avoid changing drive strengths across the
-	 * board before cutting a release kernel.  This should be updated to
-	 * use the correct offset on the release is cut.
-	 */
-
-	if (pg == TEGRA_DRIVE_PINGROUP_DDC || pg == TEGRA_DRIVE_PINGROUP_SDMMC3) {
-		reg &= ~(0x1f << 20);
-		reg |= pull_up << 20;
-	} else {
-		reg &= ~(0x1f << 12);
-		reg |= pull_up << 12;
-	}
+	reg &= ~(0x1f << 20);
+	reg |= pull_up << 20;
 	pg_writel(reg, drive_pingroups[pg].reg);
 
 	spin_unlock_irqrestore(&mux_lock, flags);

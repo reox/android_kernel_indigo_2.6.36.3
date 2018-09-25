@@ -252,7 +252,7 @@ static u8 tegra_w1_touch_bit(void *data, u8 bit)
 	return_bit = 0;
 	mutex_lock(&dev->mutex);
 	if (!dev->ready)
-		goto done_unlock;
+		goto done;
 
 	clk_enable(dev->clk);
 	w1_imask(dev, OI_BIT_XFER_DONE);
@@ -282,7 +282,7 @@ static u8 tegra_w1_touch_bit(void *data, u8 bit)
 		w1_writel(dev, control | OC_WR0_BIT, OWR_CONTROL);
 		rc = w1_wait(dev, OI_BIT_XFER_DONE);
 		if (rc) {
-			W1_ERR("write-0 failed %d\n", rc);
+			W1_ERR("write-0 failed\n");
 			goto done;
 		}
 	}
@@ -292,7 +292,6 @@ done:
 	w1_imask(dev, 0);
 	dev->transfer_completion = NULL;
 	clk_disable(dev->clk);
-done_unlock:
 	mutex_unlock(&dev->mutex);
 	return return_bit;
 }
@@ -309,7 +308,7 @@ static u8 tegra_w1_reset_bus(void *data)
 	presence = 1;
 	mutex_lock(&dev->mutex);
 	if (!dev->ready)
-		goto not_ready;
+		goto done;
 
 	clk_enable(dev->clk);
 	w1_imask(dev, OI_PRESENCE_DONE);
@@ -337,7 +336,6 @@ done:
 	w1_imask(dev, 0);
 	dev->transfer_completion = NULL;
 	clk_disable(dev->clk);
-not_ready:
 	mutex_unlock(&dev->mutex);
 	return presence;
 }
@@ -452,10 +450,6 @@ static int tegra_w1_remove(struct platform_device *pdev)
 
 static int tegra_w1_suspend(struct platform_device *pdev, pm_message_t state)
 {
-	struct tegra_device *dev = platform_get_drvdata(pdev);
-	mutex_lock(&dev->mutex);
-	dev->ready = false;
-	mutex_unlock(&dev->mutex);
 	return 0;
 }
 
@@ -464,10 +458,7 @@ static int tegra_w1_resume(struct platform_device *pdev)
 	struct tegra_device *dev = platform_get_drvdata(pdev);
 
 	/* TODO: Is this necessary? I would assume yes. */
-	mutex_lock(&dev->mutex);
 	w1_setup(dev);
-	dev->ready = true;
-	mutex_unlock(&dev->mutex);
 	return 0;
 }
 

@@ -35,6 +35,7 @@
 
 /* the seed consists of 16 bytes of key + 16 bytes of init vector */
 #define TEGRA_CRYPTO_RNG_SEED_SIZE	AES_KEYSIZE_128 + DEFAULT_RNG_BLK_SZ
+#define TEGRA_CRYPTO_RNG_SIZE	SZ_16
 
 /* encrypt/decrypt operations */
 #define TEGRA_CRYPTO_ECB	BIT(0)
